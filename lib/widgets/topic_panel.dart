@@ -13,6 +13,9 @@ import '../theme/app_theme.dart';
 
 final _timeFmt = DateFormat('HH:mm:ss.SSS');
 
+// Hz options shown in the limiter dropdown
+const _kHzOptions = [0, 5, 10, 20, 30, 50];
+
 class TopicPanel extends ConsumerWidget {
   final PanelConfig config;
 
@@ -102,9 +105,21 @@ class _PanelHeader extends ConsumerWidget {
           ),
           const SizedBox(width: 8),
 
+          // Hz limiter dropdown
+          _HzChip(config: config),
+          const SizedBox(width: 4),
+
           // mode dropdown
           _ModeChip(config: config),
           const SizedBox(width: 4),
+
+          // RAW toggle
+          _IconBtn(
+            icon: state.rawMode ? Icons.data_object : Icons.account_tree_outlined,
+            tooltip: state.rawMode ? 'tree view' : 'raw JSON',
+            active: state.rawMode,
+            onTap: () => ref.read(panelProvider(config).notifier).toggleRawMode(),
+          ),
 
           // pause
           _IconBtn(
@@ -120,7 +135,7 @@ class _PanelHeader extends ConsumerWidget {
             onTap: () => ref.read(panelProvider(config).notifier).clearBuffer(),
           ),
 
-          // copy all
+          // copy latest
           _IconBtn(
             icon: Icons.copy_outlined,
             tooltip: 'copy latest message',
@@ -142,6 +157,54 @@ class _PanelHeader extends ConsumerWidget {
                 .removePanel(config.id),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Hz limiter chip ───────────────────────────────────────────────────────────
+
+class _HzChip extends ConsumerWidget {
+  final PanelConfig config;
+  const _HzChip({required this.config});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return PopupMenuButton<int>(
+      initialValue: config.maxHz,
+      tooltip: 'limit update rate',
+      onSelected: (hz) => ref.read(panelProvider(config).notifier).setMaxHz(hz),
+      itemBuilder: (_) => [
+        for (final hz in _kHzOptions)
+          PopupMenuItem(
+            value: hz,
+            child: Text(hz == 0 ? 'unlimited' : '$hz Hz',
+                style: AppTheme.ui(size: 12)),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: config.maxHz > 0 ? AppTheme.warn : AppTheme.border,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.speed,
+                size: 10,
+                color: config.maxHz > 0 ? AppTheme.warn : AppTheme.textMuted),
+            const SizedBox(width: 3),
+            Text(
+              config.maxHz == 0 ? '∞' : '${config.maxHz}Hz',
+              style: AppTheme.ui(
+                  size: 9,
+                  color: config.maxHz > 0 ? AppTheme.warn : AppTheme.textSec),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -207,7 +270,8 @@ class _PanelBodyState extends State<_PanelBody> {
   @override
   void didUpdateWidget(_PanelBody old) {
     super.didUpdateWidget(old);
-    if (_autoScroll && widget.state.messages.length != old.state.messages.length) {
+    if (_autoScroll &&
+        widget.state.messages.length != old.state.messages.length) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scrollCtrl.hasClients) {
           _scrollCtrl.animateTo(
@@ -230,6 +294,11 @@ class _PanelBodyState extends State<_PanelBody> {
           style: AppTheme.ui(size: 11, color: AppTheme.textMuted),
         ),
       );
+    }
+
+    // RAW mode: full pretty-printed JSON of last message
+    if (widget.state.rawMode) {
+      return _RawJsonView(msg: msgs.last);
     }
 
     // latest-only: show JSON tree of last message
@@ -273,6 +342,25 @@ class _PanelBodyState extends State<_PanelBody> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ── raw JSON view ─────────────────────────────────────────────────────────────
+
+class _RawJsonView extends StatelessWidget {
+  final TopicMessage msg;
+  const _RawJsonView({required this.msg});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = const JsonEncoder.withIndent('  ').convert(msg.msg);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(8),
+      child: SelectableText(
+        text,
+        style: AppTheme.mono(size: 11, color: AppTheme.textPrim),
       ),
     );
   }
@@ -343,6 +431,11 @@ class _MessageRowState extends State<_MessageRow> {
 
 // ── JSON tree ─────────────────────────────────────────────────────────────────
 
+// Threshold: arrays longer than this are shown as a summary pill instead of
+// being fully rendered (prevents UI freeze on PointCloud2, Image, etc.)
+const _kMaxInlineList = 32;
+const _kMaxDepth = 10;
+
 class _JsonTree extends StatelessWidget {
   final Map<String, dynamic> msg;
   final DateTime? ts;
@@ -358,7 +451,16 @@ class _JsonTree extends StatelessWidget {
   }
 
   Widget _buildNode(dynamic value, int depth) {
+    if (depth >= _kMaxDepth) {
+      return Text('…',
+          style: AppTheme.mono(size: 10, color: AppTheme.textMuted));
+    }
+
     if (value is Map) {
+      if (value.isEmpty) {
+        return Text('{}',
+            style: AppTheme.mono(size: 11, color: AppTheme.textMuted));
+      }
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: value.entries.map((e) {
@@ -394,43 +496,127 @@ class _JsonTree extends StatelessWidget {
           );
         }).toList(),
       );
-    } else if (value is List) {
-      if (value.isEmpty) {
-        return Text('[]',
-            style: AppTheme.mono(size: 11, color: AppTheme.textMuted));
-      }
-      if (value.every((e) => e is num)) {
-        // compact float array (e.g. descriptors)
-        final preview = value.take(8).map((e) {
-          if (e is double) return e.toStringAsFixed(4);
-          return e.toString();
-        }).join(', ');
-        final suffix = value.length > 8 ? '… (${value.length})' : '';
-        return Text(
-          '[$preview$suffix]',
-          style: AppTheme.mono(size: 10, color: AppTheme.textMuted),
-        );
-      }
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: value.asMap().entries.map((e) {
-          return Padding(
-            padding: EdgeInsets.only(left: depth * 12.0),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('[${e.key}] ',
-                    style: AppTheme.mono(
-                        size: 10, color: AppTheme.textMuted)),
-                Expanded(child: _buildNode(e.value, depth + 1)),
-              ],
-            ),
-          );
-        }).toList(),
-      );
     }
+
+    if (value is List) {
+      return _buildList(value, depth);
+    }
+
     return Text(_formatLeaf(value),
         style: AppTheme.mono(size: 11, color: _leafColor(value)));
+  }
+
+  Widget _buildList(List<dynamic> list, int depth) {
+    if (list.isEmpty) {
+      return Text('[]',
+          style: AppTheme.mono(size: 11, color: AppTheme.textMuted));
+    }
+
+    // ── integer / byte array ─────────────────────────────────────────────────
+    // ROS byte arrays (uint8[], int8[], etc.) arrive as large int lists.
+    // Rendering them would freeze the UI; show a summary pill instead.
+    if (list.every((e) => e is int)) {
+      if (list.length > _kMaxInlineList) {
+        return _ArraySummaryPill(
+          label: '📦 byte array',
+          count: list.length,
+          detail: 'int[${list.length}]',
+          onCopy: () {
+            // Copy as comma-separated hex for debugging
+            final hex = list.take(64).map((e) => '0x${(e as int).toRadixString(16).padLeft(2, '0')}').join(', ');
+            final suffix = list.length > 64 ? ', … (+${list.length - 64} more)' : '';
+            Clipboard.setData(ClipboardData(text: '$hex$suffix'));
+          },
+        );
+      }
+      // Short int array — show inline
+      return Text(
+        '[${list.join(', ')}]',
+        style: AppTheme.mono(size: 10, color: AppTheme.textMuted),
+      );
+    }
+
+    // ── float array ─────────────────────────────────────────────────────────
+    // float32[] / float64[] descriptors, pose covariance, etc.
+    if (list.every((e) => e is num)) {
+      if (list.length > _kMaxInlineList) {
+        final nums = list.cast<num>();
+        final mn = nums.reduce((a, b) => a < b ? a : b);
+        final mx = nums.reduce((a, b) => a > b ? a : b);
+        final preview = nums.take(6).map((e) {
+          if (e is double) return e.toStringAsFixed(3);
+          return e.toString();
+        }).join(', ');
+        return _ArraySummaryPill(
+          label: '〜 float array',
+          count: list.length,
+          detail: 'float[${list.length}]  min=${mn.toStringAsFixed(4)}  max=${mx.toStringAsFixed(4)}',
+          preview: '[$preview …]',
+          onCopy: () {
+            final csv = nums.map((e) => e.toString()).join(', ');
+            Clipboard.setData(ClipboardData(text: csv));
+          },
+        );
+      }
+      // Short float array — same compact display as before
+      final preview = list.take(8).map((e) {
+        if (e is double) return e.toStringAsFixed(4);
+        return e.toString();
+      }).join(', ');
+      final suffix = list.length > 8 ? '… (${list.length})' : '';
+      return Text(
+        '[$preview$suffix]',
+        style: AppTheme.mono(size: 10, color: AppTheme.textMuted),
+      );
+    }
+
+    // ── generic list (nested messages, strings, mixed) ───────────────────────
+    if (list.length > _kMaxInlineList) {
+      // Show first few items + count
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...list.take(8).toList().asMap().entries.map((e) {
+            return Padding(
+              padding: EdgeInsets.only(left: depth * 12.0),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('[${e.key}] ',
+                      style: AppTheme.mono(size: 10, color: AppTheme.textMuted)),
+                  Expanded(child: _buildNode(e.value, depth + 1)),
+                ],
+              ),
+            );
+          }),
+          Padding(
+            padding: EdgeInsets.only(left: depth * 12.0),
+            child: Text(
+              '  … and ${list.length - 8} more items',
+              style: AppTheme.mono(size: 10, color: AppTheme.textMuted),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: list.asMap().entries.map((e) {
+        return Padding(
+          padding: EdgeInsets.only(left: depth * 12.0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('[${e.key}] ',
+                  style: AppTheme.mono(
+                      size: 10, color: AppTheme.textMuted)),
+              Expanded(child: _buildNode(e.value, depth + 1)),
+            ],
+          ),
+        );
+      }).toList(),
+    );
   }
 
   bool _isLeaf(dynamic v) =>
@@ -450,15 +636,79 @@ class _JsonTree extends StatelessWidget {
   }
 }
 
+// ── array summary pill ────────────────────────────────────────────────────────
+
+class _ArraySummaryPill extends StatelessWidget {
+  final String label;
+  final int count;
+  final String detail;
+  final String? preview;
+  final VoidCallback onCopy;
+
+  const _ArraySummaryPill({
+    required this.label,
+    required this.count,
+    required this.detail,
+    this.preview,
+    required this.onCopy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: detail,
+      child: InkWell(
+        onTap: onCopy,
+        borderRadius: BorderRadius.circular(4),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            color: AppTheme.bg3,
+            border: Border.all(color: AppTheme.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$label ($count)',
+                style: AppTheme.mono(size: 10, color: AppTheme.textSec),
+              ),
+              if (preview != null) ...[
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    preview!,
+                    style: AppTheme.mono(size: 10, color: AppTheme.textMuted),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+              const SizedBox(width: 6),
+              const Icon(Icons.copy, size: 10, color: AppTheme.textMuted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 class _IconBtn extends StatelessWidget {
   final IconData icon;
   final String tooltip;
   final VoidCallback onTap;
+  final bool active;
 
-  const _IconBtn(
-      {required this.icon, required this.tooltip, required this.onTap});
+  const _IconBtn({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.active = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -469,7 +719,9 @@ class _IconBtn extends StatelessWidget {
         borderRadius: BorderRadius.circular(4),
         child: Padding(
           padding: const EdgeInsets.all(4),
-          child: Icon(icon, size: 14, color: AppTheme.textMuted),
+          child: Icon(icon,
+              size: 14,
+              color: active ? AppTheme.accent : AppTheme.textMuted),
         ),
       ),
     );

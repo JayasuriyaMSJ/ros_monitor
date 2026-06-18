@@ -1,6 +1,5 @@
 // lib/models/panel.dart
 
-import 'package:flutter/foundation.dart';
 import 'rosbridge.dart';
 
 enum PanelMode { latest, streaming, history }
@@ -13,6 +12,9 @@ class PanelConfig {
   final int bufferSize;
   final bool paused;
   final bool pinned;
+  /// Max UI refresh rate in Hz. 0 = unlimited (every message triggers a rebuild).
+  /// Server-side throttle_rate is derived from this value.
+  final int maxHz;
 
   const PanelConfig({
     required this.id,
@@ -22,6 +24,7 @@ class PanelConfig {
     this.bufferSize = 100,
     this.paused = false,
     this.pinned = false,
+    this.maxHz = 0,
   });
 
   PanelConfig copyWith({
@@ -31,6 +34,7 @@ class PanelConfig {
     int? bufferSize,
     bool? paused,
     bool? pinned,
+    int? maxHz,
   }) =>
       PanelConfig(
         id: id,
@@ -40,6 +44,7 @@ class PanelConfig {
         bufferSize: bufferSize ?? this.bufferSize,
         paused: paused ?? this.paused,
         pinned: pinned ?? this.pinned,
+        maxHz: maxHz ?? this.maxHz,
       );
 
   Map<String, dynamic> toJson() => {
@@ -49,6 +54,7 @@ class PanelConfig {
         'mode': mode.name,
         'bufferSize': bufferSize,
         'pinned': pinned,
+        'maxHz': maxHz,
       };
 
   factory PanelConfig.fromJson(Map<String, dynamic> j) => PanelConfig(
@@ -61,6 +67,7 @@ class PanelConfig {
         ),
         bufferSize: j['bufferSize'] as int? ?? 100,
         pinned: j['pinned'] as bool? ?? false,
+        maxHz: j['maxHz'] as int? ?? 0,
       );
 }
 
@@ -70,6 +77,8 @@ class PanelState {
   final double msgRate;          // Hz
   final DateTime? lastReceived;
   final int totalCount;
+  /// When true, the panel shows the raw JSON text instead of the tree view.
+  final bool rawMode;
 
   const PanelState({
     required this.config,
@@ -77,6 +86,7 @@ class PanelState {
     this.msgRate = 0,
     this.lastReceived,
     this.totalCount = 0,
+    this.rawMode = false,
   });
 
   PanelState copyWith({
@@ -85,6 +95,7 @@ class PanelState {
     double? msgRate,
     DateTime? lastReceived,
     int? totalCount,
+    bool? rawMode,
   }) =>
       PanelState(
         config: config ?? this.config,
@@ -92,5 +103,7 @@ class PanelState {
         msgRate: msgRate ?? this.msgRate,
         lastReceived: lastReceived ?? this.lastReceived,
         totalCount: totalCount ?? this.totalCount,
+        rawMode: rawMode ?? this.rawMode,
       );
 }
+

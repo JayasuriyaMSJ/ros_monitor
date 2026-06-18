@@ -4,12 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/workspace.dart';
-import '../models/panel.dart';
 import '../providers/workspace_provider.dart';
 import '../services/rosbridge_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/topic_panel.dart';
 import '../widgets/topic_sidebar.dart';
+
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
@@ -268,7 +268,7 @@ class _ColBtn extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 1),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(3),
-          color: active ? AppTheme.accent.withOpacity(0.2) : Colors.transparent,
+            color: active ? AppTheme.accent.withValues(alpha: 0.2) : Colors.transparent,
           border: Border.all(
             color: active ? AppTheme.accent : AppTheme.border,
           ),
@@ -399,7 +399,7 @@ class _AddPanelDialogState extends ConsumerState<_AddPanelDialog> {
                   style: AppTheme.ui(size: 11, color: AppTheme.textSec)),
               const SizedBox(height: 8),
               DropdownButtonFormField<String>(
-                value: _selected,
+                initialValue: _selected,
                 isExpanded: true,
                 decoration: InputDecoration(
                   hintText: 'select topic…',

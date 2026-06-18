@@ -2,10 +2,14 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:uuid/uuid.dart';
 import '../models/rosbridge.dart';
+
+/// Threshold above which JSON parsing is offloaded to a background isolate.
+const _kLargeFrameBytes = 4096;
 
 const _uuid = Uuid();
 
@@ -93,9 +97,9 @@ class RosBridgeService {
   }
 
   // ── subscribe / unsubscribe ───────────────────────────────────────────────
-  String subscribe(String topic, {String type = ''}) {
+  String subscribe(String topic, {String type = '', int throttleRateMs = 0}) {
     final id = 'sub_${_uuid.v4()}';
-    send(SubscribeMsg(id: id, topic: topic, type: type));
+    send(SubscribeMsg(id: id, topic: topic, type: type, throttleRateMs: throttleRateMs));
     return id;
   }
 
@@ -110,16 +114,27 @@ class RosBridgeService {
 
   // ── frame parser ─────────────────────────────────────────────────────────
   void _onFrame(dynamic raw) {
-    try {
-      final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-      final op = frame['op'] as String?;
+    final str = raw as String;
+    if (str.length > _kLargeFrameBytes) {
+      // Offload large JSON decoding to a background isolate so the UI thread
+      // stays responsive when big messages (PointCloud2, Image, etc.) arrive.
+      compute(jsonDecode, str).then((decoded) {
+        _dispatchFrame(decoded as Map<String, dynamic>);
+      }).catchError((_) {});
+    } else {
+      try {
+        _dispatchFrame(jsonDecode(str) as Map<String, dynamic>);
+      } catch (_) {}
+    }
+  }
 
-      if (op == 'publish') {
-        _messageController.add(frame);
-      } else if (op == 'service_response') {
-        _handleServiceResponse(frame);
-      }
-    } catch (_) {}
+  void _dispatchFrame(Map<String, dynamic> frame) {
+    final op = frame['op'] as String?;
+    if (op == 'publish') {
+      _messageController.add(frame);
+    } else if (op == 'service_response') {
+      _handleServiceResponse(frame);
+    }
   }
 
   void _handleServiceResponse(Map<String, dynamic> frame) {

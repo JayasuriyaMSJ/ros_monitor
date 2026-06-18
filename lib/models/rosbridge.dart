@@ -13,14 +13,18 @@ class RosBridgeMsg {
 }
 
 class SubscribeMsg extends RosBridgeMsg {
-  SubscribeMsg({required String id, required String topic, String type = ''})
-      : super('subscribe', {
+  SubscribeMsg({
+    required String id,
+    required String topic,
+    String type = '',
+    int throttleRateMs = 0,
+  }) : super('subscribe', {
           'id': id,
           'topic': topic,
           if (type.isNotEmpty) 'type': type,
           'compression': 'none',
-          'throttle_rate': 0,
-          'queue_length': 0,
+          'throttle_rate': throttleRateMs, // ms between msgs; 0 = unlimited
+          'queue_length': 1,               // drop excess when throttled
         });
 }
 

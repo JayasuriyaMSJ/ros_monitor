@@ -17,6 +17,15 @@ class PanelNotifier extends StateNotifier<PanelState> {
   final _rateWindow = <DateTime>[];
   Timer? _rateTimer;
 
+  // ── 30fps flush buffer (Bug #2 fix) ─────────────────────────────────────────
+  // Instead of calling `state =` on every incoming message (which triggers a
+  // full widget rebuild for every message at 100+ Hz), we buffer messages and
+  // flush to the UI at most once per _kFlushInterval.
+  static const _kFlushInterval = Duration(milliseconds: 33); // ~30 fps
+  final _pending = <TopicMessage>[];
+  Timer? _flushTimer;
+  int _pendingTotal = 0; // total count including dropped frames
+
   PanelNotifier(PanelConfig config, this._ref)
       : super(PanelState(config: config)) {
     _subscribe();
@@ -28,7 +37,16 @@ class PanelNotifier extends StateNotifier<PanelState> {
 
   void _subscribe() {
     final svc = _ref.read(rosBridgeServiceProvider);
-    _subId = svc.subscribe(state.config.topic, type: state.config.msgType);
+    final cfg = state.config;
+
+    // Convert maxHz → throttle_rate (ms). 0 = no throttle.
+    final throttleMs = cfg.maxHz > 0 ? (1000 ~/ cfg.maxHz) : 0;
+
+    _subId = svc.subscribe(
+      cfg.topic,
+      type: cfg.msgType,
+      throttleRateMs: throttleMs,
+    );
 
     _msgSub = svc.messageStream.listen((frame) {
       if (frame['topic'] != state.config.topic) return;
@@ -37,23 +55,44 @@ class PanelNotifier extends StateNotifier<PanelState> {
       final msg = TopicMessage.fromFrame(frame);
       _rateWindow.add(msg.receivedAt);
 
-      List<TopicMessage> updated;
-      if (state.config.mode == PanelMode.latest) {
-        updated = [msg];
-      } else {
-        updated = [...state.messages, msg];
-        final max = state.config.bufferSize;
-        if (updated.length > max) {
-          updated = updated.sublist(updated.length - max);
-        }
-      }
+      // Buffer the message; flush timer will push it to the UI
+      _pending.add(msg);
+      _pendingTotal++;
 
-      state = state.copyWith(
-        messages: updated,
-        lastReceived: msg.receivedAt,
-        totalCount: state.totalCount + 1,
-      );
+      // Start flush timer lazily — auto-fires at ~30fps
+      _flushTimer ??= Timer.periodic(_kFlushInterval, (_) => _flush());
     });
+  }
+
+  /// Drain _pending into state in a single assignment (one widget rebuild).
+  void _flush() {
+    if (_pending.isEmpty) {
+      // Nothing arrived — cancel the timer to avoid idle ticks
+      _flushTimer?.cancel();
+      _flushTimer = null;
+      return;
+    }
+
+    final incoming = List<TopicMessage>.of(_pending);
+    _pending.clear();
+
+    List<TopicMessage> updated;
+    if (state.config.mode == PanelMode.latest) {
+      updated = [incoming.last]; // only care about the newest
+    } else {
+      updated = [...state.messages, ...incoming];
+      final max = state.config.bufferSize;
+      if (updated.length > max) {
+        updated = updated.sublist(updated.length - max);
+      }
+    }
+
+    state = state.copyWith(
+      messages: updated,
+      lastReceived: incoming.last.receivedAt,
+      totalCount: state.totalCount + _pendingTotal,
+    );
+    _pendingTotal = 0;
   }
 
   void _updateRate() {
@@ -70,6 +109,8 @@ class PanelNotifier extends StateNotifier<PanelState> {
   }
 
   void clearBuffer() {
+    _pending.clear();
+    _pendingTotal = 0;
     state = state.copyWith(messages: []);
   }
 
@@ -81,11 +122,25 @@ class PanelNotifier extends StateNotifier<PanelState> {
     state = state.copyWith(config: state.config.copyWith(bufferSize: size));
   }
 
+  void setMaxHz(int hz) {
+    // Resubscribe with new throttle rate
+    _unsubscribe();
+    state = state.copyWith(
+      config: state.config.copyWith(maxHz: hz),
+      messages: [],
+    );
+    _subscribe();
+  }
+
+  void toggleRawMode() {
+    state = state.copyWith(rawMode: !state.rawMode);
+  }
+
   void updateConfig(PanelConfig config) {
-    // resubscribe if topic changed
     final topicChanged = config.topic != state.config.topic;
+    final hzChanged    = config.maxHz  != state.config.maxHz;
     state = state.copyWith(config: config, messages: topicChanged ? [] : null);
-    if (topicChanged) {
+    if (topicChanged || hzChanged) {
       _unsubscribe();
       _subscribe();
     }
@@ -103,6 +158,7 @@ class PanelNotifier extends StateNotifier<PanelState> {
   @override
   void dispose() {
     _rateTimer?.cancel();
+    _flushTimer?.cancel();
     _unsubscribe();
     super.dispose();
   }

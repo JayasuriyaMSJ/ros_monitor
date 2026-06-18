@@ -180,7 +180,7 @@ class _StatusDot extends StatelessWidget {
         shape: BoxShape.circle,
         color: color,
         boxShadow: status == ConnectionStatus.connected
-            ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 6)]
+            ? [BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 6)]
             : null,
       ),
     );

@@ -56,7 +56,7 @@ class _TopicSidebarState extends ConsumerState<TopicSidebar> {
                       width: 12,
                       height: 12,
                       child: CircularProgressIndicator(strokeWidth: 1.5)),
-                  error: (_, __) => const SizedBox.shrink(),
+                  error: (e, _) => const SizedBox.shrink(),
                 ),
               ],
             ),
