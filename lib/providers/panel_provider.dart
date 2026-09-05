@@ -155,11 +155,15 @@ class PanelNotifier extends StateNotifier<PanelState> {
     _subId = null;
   }
 
-  @override
-  void dispose() {
+  void closePanel() {
     _rateTimer?.cancel();
     _flushTimer?.cancel();
     _unsubscribe();
+  }
+
+  @override
+  void dispose() {
+    closePanel();
     super.dispose();
   }
 }

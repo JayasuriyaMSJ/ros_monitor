@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:uuid/uuid.dart';
 import '../models/rosbridge.dart';
+import 'socket_channel.dart';
 
 /// Threshold above which JSON parsing is offloaded to a background isolate.
 const _kLargeFrameBytes = 4096;
@@ -26,6 +27,10 @@ class RosBridgeService {
   String _uri = '';
   bool _autoReconnect = true;
   Timer? _reconnectTimer;
+  int _connectId = 0;
+
+  // Active topic subscriptions registry for automatic resubscription across reconnects
+  final Map<String, SubscribeMsg> _activeSubscriptions = {};
 
   Stream<ConnectionStatus>       get statusStream  => _statusController.stream;
   Stream<Map<String, dynamic>>   get messageStream => _messageController.stream;
@@ -34,29 +39,57 @@ class RosBridgeService {
 
   // ── connect ──────────────────────────────────────────────────────────────
   Future<void> connect(String uri, {bool autoReconnect = true}) async {
+    final currentId = ++_connectId;
     _uri = uri;
     _autoReconnect = autoReconnect;
     _reconnectTimer?.cancel();
+
     await _disconnect();
+    if (currentId != _connectId) return;
+
     _setStatus(ConnectionStatus.connecting);
 
     try {
-      _channel = WebSocketChannel.connect(Uri.parse(uri));
-      await _channel!.ready.timeout(const Duration(seconds: 5));
+      final channel = openWebSocket(
+        Uri.parse(uri),
+        pingInterval: const Duration(seconds: 2),
+      );
+      _channel = channel;
+
+      await channel.ready.timeout(const Duration(seconds: 4));
+      if (currentId != _connectId) {
+        try {
+          await channel.sink.close();
+        } catch (_) {}
+        return;
+      }
+
       _setStatus(ConnectionStatus.connected);
 
-      _sub = _channel!.stream.listen(
+      _sub = channel.stream.listen(
         _onFrame,
-        onError: (_) => _onLost(),
-        onDone: _onLost,
+        onError: (_) {
+          if (currentId == _connectId) _onLost();
+        },
+        onDone: () {
+          if (currentId == _connectId) _onLost();
+        },
         cancelOnError: false,
       );
+
+      // Automatically re-subscribe all active topics on the newly established connection
+      for (final sub in _activeSubscriptions.values) {
+        channel.sink.add(sub.toJson());
+      }
 
       // auto-fetch topic list on connect
       requestTopics();
     } catch (e) {
-      _setStatus(ConnectionStatus.error);
-      _scheduleReconnect();
+      if (currentId == _connectId) {
+        await _disconnect();
+        _setStatus(ConnectionStatus.error);
+        _scheduleReconnect();
+      }
     }
   }
 
@@ -64,18 +97,31 @@ class RosBridgeService {
   Future<void> disconnect() async {
     _autoReconnect = false;
     _reconnectTimer?.cancel();
+    _connectId++; // invalidate any ongoing connect attempts
     await _disconnect();
     _setStatus(ConnectionStatus.disconnected);
   }
 
   Future<void> _disconnect() async {
-    await _sub?.cancel();
+    try {
+      await _sub?.cancel();
+    } catch (_) {}
     _sub = null;
-    await _channel?.sink.close();
+
+    final ch = _channel;
     _channel = null;
+    if (ch != null) {
+      try {
+        await ch.sink.close().timeout(
+          const Duration(milliseconds: 500),
+          onTimeout: () => null,
+        );
+      } catch (_) {}
+    }
   }
 
   void _onLost() {
+    _disconnect();
     _setStatus(ConnectionStatus.disconnected);
     _scheduleReconnect();
   }
@@ -93,17 +139,22 @@ class RosBridgeService {
   // ── send ─────────────────────────────────────────────────────────────────
   void send(RosBridgeMsg msg) {
     if (_status != ConnectionStatus.connected) return;
-    _channel?.sink.add(msg.toJson());
+    try {
+      _channel?.sink.add(msg.toJson());
+    } catch (_) {}
   }
 
   // ── subscribe / unsubscribe ───────────────────────────────────────────────
   String subscribe(String topic, {String type = '', int throttleRateMs = 0}) {
     final id = 'sub_${_uuid.v4()}';
-    send(SubscribeMsg(id: id, topic: topic, type: type, throttleRateMs: throttleRateMs));
+    final msg = SubscribeMsg(id: id, topic: topic, type: type, throttleRateMs: throttleRateMs);
+    _activeSubscriptions[id] = msg;
+    send(msg);
     return id;
   }
 
   void unsubscribe(String id, String topic) {
+    _activeSubscriptions.remove(id);
     send(UnsubscribeMsg(id: id, topic: topic));
   }
 
@@ -162,8 +213,8 @@ class RosBridgeService {
 
   void dispose() {
     _reconnectTimer?.cancel();
-    _sub?.cancel();
-    _channel?.sink.close();
+    _activeSubscriptions.clear();
+    _disconnect();
     _statusController.close();
     _messageController.close();
     _topicsController.close();

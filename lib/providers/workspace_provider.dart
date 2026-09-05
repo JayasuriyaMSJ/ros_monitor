@@ -10,6 +10,7 @@ import '../models/panel.dart';
 const _uuid = Uuid();
 const _prefKey = 'workspace_v1';
 const _connKey  = 'connection_v1';
+const _ipHistoryKey = 'ip_history_v1';
 
 // ─── connection config ────────────────────────────────────────────────────────
 
@@ -31,13 +32,59 @@ class ConnectionConfigNotifier extends StateNotifier<ConnectionConfig> {
   Future<void> update(ConnectionConfig cfg) async {
     state = cfg;
     final prefs = await SharedPreferences.getInstance();
-    prefs.setString(_connKey, jsonEncode(cfg.toJson()));
+    await prefs.setString(_connKey, jsonEncode(cfg.toJson()));
   }
 }
 
 final connectionConfigProvider =
     StateNotifierProvider<ConnectionConfigNotifier, ConnectionConfig>(
   (ref) => ConnectionConfigNotifier(),
+);
+
+// ─── IP history ───────────────────────────────────────────────────────────────
+
+class IpHistoryNotifier extends StateNotifier<List<String>> {
+  IpHistoryNotifier() : super(const []) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList(_ipHistoryKey);
+    if (list != null && list.isNotEmpty) {
+      state = list;
+    }
+  }
+
+  Future<void> addHost(String host) async {
+    final trimmed = host.trim();
+    if (trimmed.isEmpty) return;
+
+    // Filter out existing occurrence (case-insensitive)
+    final updated = [
+      trimmed,
+      ...state.where((h) => h.toLowerCase() != trimmed.toLowerCase()),
+    ];
+
+    // Cap at 15 items
+    final capped = updated.length > 15 ? updated.sublist(0, 15) : updated;
+    state = capped;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_ipHistoryKey, capped);
+  }
+
+  Future<void> removeHost(String host) async {
+    final updated = state.where((h) => h != host).toList();
+    state = updated;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_ipHistoryKey, updated);
+  }
+}
+
+final ipHistoryProvider =
+    StateNotifierProvider<IpHistoryNotifier, List<String>>(
+  (ref) => IpHistoryNotifier(),
 );
 
 // ─── workspace ────────────────────────────────────────────────────────────────

@@ -152,9 +152,10 @@ class _PanelHeader extends ConsumerWidget {
           _IconBtn(
             icon: Icons.close,
             tooltip: 'close panel',
-            onTap: () => ref
-                .read(workspaceProvider.notifier)
-                .removePanel(config.id),
+            onTap: () {
+              ref.read(panelProvider(config).notifier).closePanel();
+              ref.read(workspaceProvider.notifier).removePanel(config.id);
+            },
           ),
         ],
       ),
